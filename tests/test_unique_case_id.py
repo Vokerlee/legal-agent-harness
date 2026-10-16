@@ -68,7 +68,7 @@ def test_load_cases_rejects_duplicate_case_id(tmp_path):
     message = str(excinfo.value)
     assert "дублирующийся case_id 'a-1'" in message
     assert ":3:" in message  # где найден дубликат
-    assert "записи 1" in message  # где встретился впервые
+    assert "строке 1" in message  # где встретился впервые
 
 
 def test_load_responses_rejects_duplicate_case_id(tmp_path):

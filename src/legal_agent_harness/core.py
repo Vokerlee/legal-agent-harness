@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 # События прогона. Порядок отражает жизненный цикл кейса.
 EVENTS = (
@@ -425,7 +425,7 @@ def load_cases(path: str) -> List[Dict[str, Any]]:
     """
     cases: List[Dict[str, Any]] = []
     seen: Dict[str, int] = {}
-    for line_no, obj in enumerate(_iter_jsonl(path), start=1):
+    for line_no, obj in _iter_jsonl(path):
         try:
             validate_case(obj)
         except CaseValidationError as exc:
@@ -434,7 +434,7 @@ def load_cases(path: str) -> List[Dict[str, Any]]:
         if case_id in seen:
             raise CaseValidationError(
                 f"{path}:{line_no}: дублирующийся case_id {case_id!r} "
-                f"(впервые встречается в записи {seen[case_id]})"
+                f"(впервые встречается в строке {seen[case_id]})"
             )
         seen[case_id] = line_no
         cases.append(obj)
@@ -450,29 +450,55 @@ def load_responses(path: str) -> Dict[str, Dict[str, Any]]:
     """
     responses: Dict[str, Dict[str, Any]] = {}
     seen: Dict[str, int] = {}
-    for line_no, obj in enumerate(_iter_jsonl(path), start=1):
+    for line_no, obj in _iter_jsonl(path):
         if not isinstance(obj, dict) or not _is_str(obj.get("case_id")):
             raise ResponseValidationError(f"{path}:{line_no}: требуется case_id")
         case_id = obj["case_id"]
         if case_id in seen:
             raise ResponseValidationError(
                 f"{path}:{line_no}: дублирующийся case_id {case_id!r} "
-                f"(впервые встречается в записи {seen[case_id]})"
+                f"(впервые встречается в строке {seen[case_id]})"
             )
         seen[case_id] = line_no
         responses[case_id] = obj
     return responses
 
 
-def _iter_jsonl(path: str) -> Iterator[Any]:
-    with open(path, "r", encoding="utf-8") as fh:
+class _DuplicateKeyError(ValueError):
+    """Повторяющийся ключ внутри одного JSON-объекта."""
+
+
+def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    obj: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise _DuplicateKeyError(f"повторяющийся ключ {key!r} внутри JSON-объекта")
+        obj[key] = value
+    return obj
+
+
+def _iter_jsonl(path: str) -> Iterator[Tuple[int, Any]]:
+    """Читает JSONL и возвращает пары (номер строки в файле, объект).
+
+    - UTF-8 BOM в начале файла допускается: так сохраняют файлы некоторые
+      редакторы Windows, и раньше такой файл падал с «некорректный JSON».
+    - Пустые строки и строки-комментарии (``#``) пропускаются, но номер строки
+      остаётся физическим, чтобы сообщение об ошибке указывало на ту строку,
+      которую эксперт видит в редакторе.
+    - Повторяющийся ключ внутри объекта — ошибка: ``json.loads`` молча оставил
+      бы последнее значение, и второе ``"predicate"`` подменило бы первое.
+    """
+    with open(path, "r", encoding="utf-8-sig") as fh:
         for line_no, line in enumerate(fh, start=1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             try:
-                yield json.loads(line)
+                obj = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
             except json.JSONDecodeError as exc:
                 raise HarnessError(
                     f"{path}:{line_no}: некорректный JSON: {exc}"
                 ) from exc
+            except _DuplicateKeyError as exc:
+                raise HarnessError(f"{path}:{line_no}: {exc}") from exc
+            yield line_no, obj
