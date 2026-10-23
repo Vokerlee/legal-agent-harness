@@ -130,7 +130,7 @@ def test_redaction_of_tokens_and_emails():
     payload = {
         "api_key": "test-secret-value",
         "note": "пишите на expert@example.com",
-        "header": "Authorization: Bearer test-secret-value",
+        "header": "Authorization: test-secret-value",
     }
     cleaned = redact(payload)
     assert cleaned["api_key"] == "[REDACTED]"
