@@ -128,9 +128,9 @@ def test_final_always_needs_expert_approval():
 
 def test_redaction_of_tokens_and_emails():
     payload = {
-        "api_key": "sk-abcdef0123456789abcdef0123456789",
+        "api_key": "test-secret-value",
         "note": "пишите на expert@example.com",
-        "header": "Authorization: Bearer abcdef0123456789abcdef0123456789",
+        "header": "Authorization: Bearer test-secret-value",
     }
     cleaned = redact(payload)
     assert cleaned["api_key"] == "[REDACTED]"
