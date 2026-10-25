@@ -6,7 +6,8 @@ from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from legal_agent_harness.validation_app import (  # noqa: E402
     append_review,
@@ -16,8 +17,18 @@ from legal_agent_harness.validation_app import (  # noqa: E402
     review_record,
 )
 
-JOURNAL = "validation/reviews.jsonl"
+# Журнал всегда в корне репозитория, независимо от каталога запуска.
+JOURNAL = ROOT / "validation" / "reviews.jsonl"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Запас на текстовые поля формы и служебные заголовки multipart.
+MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024
+
+
+def journal_label():
+    try:
+        return JOURNAL.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(JOURNAL)
 
 
 def parse_form(content_type, body):
@@ -47,7 +58,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send(render_form())
 
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:
+            self.close_connection = True
+            return self._send(render_form(message="Некорректный заголовок Content-Length"), 400)
+
+        # Размер проверяется до чтения тела: слишком большой запрос не читается в память.
+        if length > MAX_REQUEST_BYTES:
+            self.close_connection = True
+            return self._send(render_form(message="Файл больше 20 МБ"), 413)
+
+        body = self.rfile.read(length)
         form, files = parse_form(self.headers.get("Content-Type", ""), body)
 
         if "document" not in files:
@@ -87,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             append_review(JOURNAL, review)
         except OSError as exc:
             return self._send(
-                render_form(graph, f"Не удалось записать журнал {JOURNAL}: {exc}"), 500
+                render_form(graph, f"Не удалось записать журнал {journal_label()}: {exc}"), 500
             )
 
         token = form.get("hf_token", "")
@@ -96,7 +120,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             status = "публикация не выполнялась: HF-токен не указан"
 
-        return self._send(render_form(graph, f"Оценка сохранена в журнал {JOURNAL}; {status}"))
+        return self._send(
+            render_form(graph, f"Оценка сохранена в журнал {journal_label()}; {status}")
+        )
 
     def _send(self, body, status=200):
         payload = body.encode()

@@ -3,6 +3,7 @@ import http.client
 import json
 import os
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -56,24 +57,29 @@ def test_parse_form_ignores_non_multipart():
 ACT = ("act.txt", "Статья 1252 изменить".encode("utf-8"))
 
 
-def _post(tmp_path, fields, files):
-    """POST формы в запущенный сервер; журнал пишется в tmp_path."""
+def _request(tmp_path, body, headers):
+    """POST в запущенный сервер; журнал пишется в tmp_path/validation/reviews.jsonl."""
     server = validation_web.HTTPServer(("127.0.0.1", 0), validation_web.Handler)
     server.RequestHandlerClass.log_message = lambda *args: None
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
+    root, journal = validation_web.ROOT, validation_web.JOURNAL
+    validation_web.ROOT = tmp_path
+    validation_web.JOURNAL = tmp_path / "validation" / "reviews.jsonl"
     try:
-        content_type, body = _multipart(fields, files)
         port = server.server_address[1]
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        conn.request("POST", "/", body, {"Content-Type": content_type})
+        conn.request("POST", "/", body, headers)
         response = conn.getresponse()
         return response.status, response.read().decode("utf-8")
     finally:
-        os.chdir(cwd)
+        validation_web.ROOT, validation_web.JOURNAL = root, journal
         server.shutdown()
         server.server_close()
+
+
+def _post(tmp_path, fields, files):
+    content_type, body = _multipart(fields, files)
+    return _request(tmp_path, body, {"Content-Type": content_type})
 
 
 def test_post_saves_review_to_journal(tmp_path):
@@ -130,3 +136,44 @@ def test_post_errors_explain_what_is_wrong(tmp_path):
         assert message in page
         assert "Error" not in page
     assert not (tmp_path / "validation").exists()
+
+
+def test_journal_is_in_repository_root_by_default():
+    assert validation_web.JOURNAL == ROOT.resolve() / "validation" / "reviews.jsonl"
+
+
+def test_journal_does_not_depend_on_working_directory(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    cwd = os.getcwd()
+    os.chdir(elsewhere)
+    try:
+        status, page = _post(tmp_path, {"score": "5"}, {"document": ACT})
+    finally:
+        os.chdir(cwd)
+    assert status == 200
+    assert "Оценка сохранена в журнал validation/reviews.jsonl" in page
+    assert (tmp_path / "validation" / "reviews.jsonl").exists()
+    assert not (elsewhere / "validation").exists()
+
+
+def test_oversized_request_is_rejected_before_reading_body(tmp_path):
+    # Заявлен размер больше лимита, а тело короткое: если бы сервер стал читать
+    # тело целиком, он ждал бы недостающие байты до таймаута клиента.
+    content_type, body = _multipart({"score": "5"}, {"document": ACT})
+    headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(validation_web.MAX_REQUEST_BYTES + 1),
+    }
+    started = time.monotonic()
+    status, page = _request(tmp_path, body, headers)
+    assert status == 413
+    assert "Файл больше 20 МБ" in page
+    assert time.monotonic() - started < 5
+    assert not (tmp_path / "validation").exists()
+
+
+def test_invalid_content_length_is_rejected(tmp_path):
+    status, page = _request(tmp_path, b"", {"Content-Length": "abc"})
+    assert status == 400
+    assert "Некорректный заголовок Content-Length" in page
