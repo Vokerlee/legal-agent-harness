@@ -60,6 +60,9 @@ EXPECTED_ALLOWED_FIELDS = frozenset(
     EXPECTED_REQUIRED_FIELDS + ("effective_from", "effective_to", "change_description")
 )
 
+# Поля кейса, которые видит агент. Эталон expected агенту не передаётся.
+AGENT_TASK_FIELDS = ("case_id", "source")
+
 # Секреты: ключи, которые должны быть вырезаны из событий.
 _SECRET_KEY_RE = re.compile(
     r"(token|secret|api[_-]?key|password|passwd|credential|authorization|bearer)",
@@ -315,6 +318,11 @@ class RunResult:
         }
 
 
+def build_agent_task(case: Dict[str, Any]) -> Dict[str, Any]:
+    """Возвращает задание для агента: только поля AGENT_TASK_FIELDS."""
+    return {key: case[key] for key in AGENT_TASK_FIELDS}
+
+
 def run_case(
     case: Dict[str, Any],
     adapter: Any,
@@ -347,7 +355,7 @@ def run_case(
     for round_no in range(1, max_rounds + 1):
         attempts = round_no
         try:
-            raw = adapter.respond(case)
+            raw = adapter.respond(build_agent_task(case))
         except Exception as exc:  # адаптер обязан изолировать свои ошибки
             last_error = f"ошибка адаптера: {exc}"
             emit("agent_answer", round_no, {"error": last_error})
